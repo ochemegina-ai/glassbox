@@ -535,6 +535,62 @@ The CI pipeline fails immediately on:
 - Dead code
 - Any linting warnings
 
+### Pre-commit Hooks
+
+The repository ships a [`.pre-commit-config.yaml`](.pre-commit-config.yaml) that runs the same
+formatting and lint checks locally before a commit is created. The hook definitions are the
+source of truth; the commands below mirror them.
+
+1.  Install the `pre-commit` framework and register the git hook:
+
+    ```bash
+    pip install pre-commit
+    pre-commit install
+    ```
+
+    Expected output:
+
+    ```
+    pre-commit installed at .git/hooks/pre-commit
+    ```
+
+2.  Run every hook against the whole tree (useful before opening a PR or after changing the
+    config):
+
+    ```bash
+    pre-commit run --all-files
+    ```
+
+    Expected output when everything passes (exit code `0`):
+
+    ```
+    go fmt...............................................................Passed
+    go vet...............................................................Passed
+    golangci-lint........................................................Passed
+    cargo fmt............................................................Passed
+    cargo clippy.........................................................Passed
+    ```
+
+    A failing hook prints `Failed` for that hook, shows the diff or error, and exits non-zero
+    (`1`). Fix the reported issue and re-run; `pre-commit` re-stages files it rewrote
+    automatically.
+
+3.  Bypass the hooks when you intentionally need to commit without running them:
+
+    ```bash
+    # Skip every hook for a single commit
+    git commit --no-verify -m "wip: scratch commit"
+
+    # Skip only specific hooks by id (comma-separated)
+    SKIP=golangci-lint,cargo-clippy git commit -m "docs: fix typo"
+    ```
+
+    `--no-verify` and `SKIP` only affect the local commit; CI still runs the full lint suite, so
+    bypassed commits must pass `make lint-all-strict` before merge.
+
+Hook ids used with `SKIP` are the `id:` values in [`.pre-commit-config.yaml`](.pre-commit-config.yaml).
+Run `pre-commit run --all-files` after editing that file to confirm the hooks still pass.
+
 ### Telemetry and Privacy
 
 Glassbox includes optional telemetry to help diagnose runtime issues. Privacy-preserving defaults and explicit opt-in are enforced:
@@ -678,6 +734,43 @@ docs: Add comprehensive contribution guidelines
   ```bash
   go test -bench=. -benchmem ./...
   ```
+
+#### Focused test commands
+
+Use these narrower commands when iterating on a specific area. They run from the
+repository root on a clean checkout and require the Go toolchain version declared in
+`go.mod` (currently `go 1.26`). No Rust build is needed for any of them.
+
+```bash
+# Canonical JSON conformance (audit log hashing)
+go test ./internal/cmd -run TestCanonicalConformance -v
+
+# Plugin execution path
+go test ./internal/cmd -run TestRunPlugin -v
+
+# Decoder package (all tests)
+go test ./internal/decoder/...
+
+# Full Go test suite via Make
+make test
+
+# Verify README command references match the CLI surface
+./scripts/check-readme-commands.sh
+```
+
+Expected outcomes:
+
+| Command | Expected result |
+|---------|-----------------|
+| `go test ./internal/cmd -run TestCanonicalConformance -v` | `PASS` (`ok` for the package) |
+| `go test ./internal/cmd -run TestRunPlugin -v` | `PASS` (`ok` for the package) |
+| `go test ./internal/decoder/...` | `PASS` for every package under `internal/decoder` |
+| `make test` | Exits `0`; all Go packages pass |
+| `./scripts/check-readme-commands.sh` | Exits `0` with no unknown command references |
+
+If a focused command fails, re-run it on an unmodified checkout to confirm whether the
+failure is pre-existing before attributing it to your change. Record any pre-existing
+failure separately rather than mixing it into an unrelated PR.
 
 ### Development Workflow
 

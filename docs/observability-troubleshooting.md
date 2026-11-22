@@ -127,6 +127,36 @@ glassbox daemon start
 See [internal/metrics/README.md](../internal/metrics/README.md) for PromQL
 examples and Grafana dashboard reference.
 
+### Metric naming conventions
+
+Metric names and labels follow a single convention, derived from
+[docs/observability-manifest.json](observability-manifest.json) and the
+definitions in `internal/metrics`:
+
+- Names are lowercase `snake_case` (no camelCase, no dots).
+- `Counter` metrics end in `_total`.
+- Time-based `Gauge` and `Histogram` metrics end in `_seconds`.
+- Unix-timestamp `Gauge` metrics end in `_timestamp_seconds`.
+- Label names are `snake_case` (e.g. `node_address`, `network`, `status`).
+
+Valid example — a `Counter` with the `_total` suffix and snake_case labels:
+
+```
+remote_node_response_total{node_address="https://soroban-testnet.stellar.org",network="testnet",status="success"} 42
+```
+
+Invalid example — a `Counter` named `RemoteNodeResponse` (camelCase, missing
+`_total`).  The manifest validator rejects it:
+
+```bash
+bash scripts/verify-manifest.sh
+# Expected (non-zero exit):
+# ERROR: metric "RemoteNodeResponse" violates naming convention: Counter must end in "_total"
+```
+
+Fix the name to `remote_node_response_total` and re-run
+`bash scripts/verify-manifest.sh`; it should exit `0` with no output.
+
 ### Checking metric values manually
 
 ```bash
@@ -194,6 +224,68 @@ A Docker Compose file for a local Jaeger instance is provided:
 
 ```bash
 docker compose -f docker-compose.jaeger.yml up -d
+```
+
+### Distributed tracing smoke test
+
+This procedure verifies end-to-end trace export from the CLI to a local Jaeger
+instance.  It can be repeated from a clean checkout.
+
+**Prerequisites**
+
+- Docker Compose v2 (`docker compose version` succeeds).
+- A built `glassbox` binary on your `PATH` (e.g., `make build`).
+
+**Steps**
+
+1. Start Jaeger (OTLP HTTP on `4318`, UI on `16686`):
+
+   ```bash
+   docker compose -f docker-compose.jaeger.yml up -d
+   ```
+
+2. Point the CLI at the local collector:
+
+   ```bash
+   export GLASSBOX_TELEMETRY=true
+   export GLASSBOX_TELEMETRY_ENDPOINT=http://localhost:4318
+   ```
+
+3. Run any command that emits spans:
+
+   ```bash
+   glassbox debug abc123...
+   ```
+
+4. Confirm the `glassbox` service is registered with Jaeger:
+
+   ```bash
+   curl -s 'http://localhost:16686/api/services'
+   # Expected: JSON containing "glassbox", e.g.
+   # {"data":["glassbox","jaeger-query"],"total":2,"limit":0,"offset":0,"errors":null}
+   ```
+
+5. Open the Jaeger UI at `http://localhost:16686`, select service `glassbox`,
+   and confirm a trace for the run appears.  Spans carry the attributes listed
+   in the [Span attributes](#span-attributes) table below (for example
+   `glassbox.command=debug`, `glassbox.network=testnet`, and a fingerprinted
+   `glassbox.tx_hash`).
+
+6. Tear down when finished:
+
+   ```bash
+   docker compose -f docker-compose.jaeger.yml down
+   ```
+
+**Failure path: collector not running**
+
+If the collector is unreachable, the CLI reports
+`failed to export spans: connection refused` and continues normally.  Confirm
+the endpoint before re-running:
+
+```bash
+curl -s -o /dev/null -w "%{http_code}" http://localhost:4318/v1/traces
+# Expected: 405 (method not allowed) or 200, not connection refused
 ```
 
 ### Span attributes
@@ -309,7 +401,92 @@ export GLASSBOX_TELEMETRY=false
 Glassbox applies a sampling policy before exporting events to reduce noise.
 See [docs/telemetry-sampling.md](telemetry-sampling.md) for the current policy.
 
+### Telemetry opt-out verification
+
+Telemetry is disabled by default.  The effective state is resolved from the
+following sources, in order of precedence (highest first):
+
+1. `GLASSBOX_TELEMETRY` environment variable (`true`/`false`).
+2. The consent file `~/.Glassbox/telemetry_consent.json`.
+3. The per-invocation `--telemetry` runtime flag.
+4. The default: disabled.
+
+The consent file is written by `glassbox telemetry enable` / `glassbox telemetry
+disable` and records the operator's persistent choice.  The environment
+variable always wins, so CI and air-gapped shells can force a state without
+touching the consent file.
+
+#### Step-by-step verification
+
+Run these commands from a clean checkout to confirm opt-out is honored.  The
+`status` subcommand reports both the resolved `Source` and the effective
+`Enabled` value.
+
+```bash
+# 1. Inspect the current state and where it came from
+glassbox telemetry status
+# Expected (default, no consent file, no env var):
+# Source: default
+# Enabled: false
+
+# 2. Persist an opt-out; this writes ~/.Glassbox/telemetry_consent.json
+glassbox telemetry disable
+# Expected:
+# Telemetry disabled.
+
+# 3. Confirm the consent file is now the source
+glassbox telemetry status
+# Expected:
+# Source: consent file
+# Enabled: false
+
+# 4. Override with the environment variable (takes precedence)
+GLASSBOX_TELEMETRY=false glassbox telemetry status
+# Expected:
+# Source: environment variable
+# Enabled: false
+
+# 5. Confirm the env var wins even when the consent file says enabled
+GLASSBOX_TELEMETRY=true glassbox telemetry status
+# Expected:
+# Source: environment variable
+# Enabled: true
+```
+
+#### Success example: opt-out honored
+
+With the consent file written by `glassbox telemetry disable` and no
+`GLASSBOX_TELEMETRY` override, a command run performs **no OTLP export
+attempt**:
+
+```bash
+glassbox telemetry disable
+glassbox --log-level debug debug abc123... 2>&1 | grep -i otlp
+# Expected: no output (no export attempted, no connection errors)
+```
+
+#### Failure example: unrecognized environment value
+
+If `GLASSBOX_TELEMETRY` is set to a value that is not `true` or `false`, the
+status output still reports the environment variable as the source and shows
+the effective state, so the misconfiguration is visible:
+
+```bash
+GLASSBOX_TELEMETRY=yes glassbox telemetry status
+# Expected:
+# Source: environment variable
+# Enabled: false
+```
+
+Treat any `Source: environment variable` line you did not intend as a
+misconfiguration and unset the variable (`unset GLASSBOX_TELEMETRY`) before
+re-running the verification.
+
+The manifest of telemetry fields and their privacy treatment is maintained in
+[docs/observability-manifest.json](observability-manifest.json).
+
 ---
+=======
 
 ## 5. Common end-to-end scenarios
 

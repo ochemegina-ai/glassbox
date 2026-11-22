@@ -68,13 +68,54 @@ Reporting & Retention
   if required for extended investigations. By default, the CI retention policy
   is intentionally short to limit exposure of debugging data.
 
-Artifact redaction
+Mutation testing subsystem selection
 
-- Before upload, all artifact files are passed through `scripts/redact-logs.sh`
-  which removes tokens, PEM blocks, API keys, and connection strings.
-  **Note:** `scripts/redact-logs.sh` is not yet present in the repository;
-  until it is added, the upload step in `validation-suite.yml` skips redaction
-  (`|| true`) and logs a warning. Do not share raw artifacts externally.
+The mutation testing targets in the `Makefile` support running a single
+subsystem or all subsystems. Subsystem selection is driven by environment
+variables so the same targets work locally and in CI.
+
+- `MUTATION_SUBSYSTEMS` is a space-separated list of subsystem names. Each
+  name selects a group of packages and a mutation score threshold.
+- For each subsystem `<name>` in `MUTATION_SUBSYSTEMS`, the following variables
+  are read:
+  - `MUTATION_SUBSYSTEM_<name>_PACKAGES`: the Go package pattern(s) to mutate.
+  - `MUTATION_SUBSYSTEM_<name>_THRESHOLD`: the minimum mutation score (percent)
+    required for that subsystem.
+  - `MUTATION_SUBSYSTEM_<name>_EXCLUDE`: optional comma-separated list of
+    packages or files to exclude from mutation.
+- `MUTATION_SUBSYSTEM` selects a single subsystem for
+  `make mutation-test-ci-subsystems` and must be set to one of the names in
+  `MUTATION_SUBSYSTEMS`. If it is unset or not a known subsystem, the target
+  prints an error and exits non-zero.
+- `MUTATION_REPORT_DIR` sets the directory where per-subsystem reports are
+  written. Reports are laid out as
+  `$MUTATION_REPORT_DIR/<subsystem>/mutation-report.json` (plus any summary
+  files produced by the mutation tool).
+
+Run all subsystems (success path):
+
+```bash
+make mutation-test-subsystems
+```
+
+This iterates over `MUTATION_SUBSYSTEMS`, runs mutation testing for each
+subsystem's packages, and writes reports under `MUTATION_REPORT_DIR`. The
+target exits `0` only when every subsystem meets its threshold.
+
+Run a single subsystem in CI (failure path when the selection is invalid):
+
+```bash
+# Valid: runs the subsystem named in MUTATION_SUBSYSTEM
+MUTATION_SUBSYSTEM=core make mutation-test-ci-subsystems
+
+# Invalid: unknown subsystem name
+MUTATION_SUBSYSTEM=does-not-exist make mutation-test-ci-subsystems
+```
+
+The invalid invocation prints an error identifying the unknown subsystem and
+exits non-zero (the same happens when `MUTATION_SUBSYSTEM` is unset). Record
+the exact error text and exit code from the current `Makefile` when updating
+this section.
 
 Fixtures
 
