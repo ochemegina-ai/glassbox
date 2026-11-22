@@ -4,7 +4,7 @@
 #
 # validate-docs.sh — documentation validation suite.
 #
-# Runs three independent checks:
+# Runs four independent checks:
 #
 #   1. Deterministic build comparison
 #      Generates a normalised snapshot of all docs/*.md files twice from the
@@ -46,6 +46,8 @@
 #   SNAPSHOT_DIR          Snapshot cache directory (default: .doc-snapshots)
 #   GLASSBOX_BIN          Path to glassbox binary (default: bin/glassbox if built)
 #   SKIP_FLAG_CHECK       Set to 1 to skip flag smoke check (e.g. when binary not built)
+#   SKIP_FIXTURE_CHECK    Set to 1 to skip fixture line-ending check
+=======
 
 set -euo pipefail
 
@@ -54,7 +56,18 @@ DOCS_DIR="${DOCS_DIR:-${REPO_ROOT}/docs}"
 SNAPSHOT_DIR="${SNAPSHOT_DIR:-${REPO_ROOT}/.doc-snapshots}"
 GLASSBOX_BIN="${GLASSBOX_BIN:-${REPO_ROOT}/bin/glassbox}"
 SKIP_FLAG_CHECK="${SKIP_FLAG_CHECK:-0}"
+SKIP_FIXTURE_CHECK="${SKIP_FIXTURE_CHECK:-0}"
 API_SNAPSHOT_DIR="${REPO_ROOT}/.api-snapshots"
+
+# Fixture directories scanned by the line-ending check (relative to REPO_ROOT).
+FIXTURE_DIRS=("test/fixtures" "tests/fixtures" "test/regression/fixtures")
+
+# Fixtures that are intentionally CRLF or binary and must not be flagged.
+# Paths are relative to REPO_ROOT. Add an entry (with a comment) when a
+# fixture genuinely needs CRLF, e.g. a Windows-only golden file.
+FIXTURE_CRLF_ALLOWLIST=(
+  # "test/fixtures/windows/example.txt"   # Windows-only golden, CRLF required
+)
 
 # ── Parse flags ───────────────────────────────────────────────────────────────
 RUN_DET=0; RUN_LINKS=0; RUN_FLAGS=0; RUN_MANIFEST=0
